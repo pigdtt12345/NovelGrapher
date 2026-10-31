@@ -1,9 +1,194 @@
-/* ---------- Zoom / pan (paste at the END of style.css) ---------- */
+:root {
+  --ink: #12141C;
+  --panel: #1C2030;
+  --panel-line: #2C3145;
+  --parchment: #E8E1CF;
+  --parchment-dim: #B9B2A0;
+  --brass: #B8925A;
+  --brass-dim: #8C6E45;
+  --bond: #3E8878;
+  --rupture: #B5433D;
 
-#graphSvg { touch-action: none; cursor: grab; }
+  --font-display: 'Fraunces', serif;
+  --font-body: 'Inter', sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--ink);
+  color: var(--parchment);
+  font-family: var(--font-body);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}
+
+/* ---------- Top bar ---------- */
+
+.topbar {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 1.5rem 2rem;
+  border-bottom: 1px solid var(--panel-line);
+}
+
+.wordmark {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.4rem;
+  margin: 0;
+  letter-spacing: 0.01em;
+}
+
+.topbar-sub {
+  font-size: 0.9rem;
+  color: var(--parchment-dim);
+}
+
+.back-btn {
+  background: none;
+  border: none;
+  color: var(--brass);
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  cursor: pointer;
+  padding: 0.25rem 0;
+}
+.back-btn:hover { text-decoration: underline; }
+.back-btn:focus-visible, button:focus-visible, input:focus-visible {
+  outline: 2px solid var(--brass);
+  outline-offset: 2px;
+}
+
+.hidden { display: none !important; }
+
+main { max-width: 840px; margin: 0 auto; padding: 0 2rem; }
+#view-graph { max-width: 1100px; }
+
+/* ---------- View 1: novel list (table-of-contents style) ---------- */
+
+.list-intro {
+  padding-top: 2.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.list-tagline {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 1.15rem;
+  color: var(--parchment-dim);
+  margin: 0;
+}
+
+.search-input {
+  background: var(--panel);
+  border: 1px solid var(--panel-line);
+  color: var(--parchment);
+  padding: 0.55rem 0.8rem;
+  border-radius: 3px;
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  min-width: 220px;
+}
+.search-input::placeholder { color: var(--parchment-dim); }
+
+.status-line {
+  color: var(--parchment-dim);
+  font-size: 0.9rem;
+  padding: 1.5rem 0 0;
+}
+
+.novel-list {
+  list-style: none;
+  margin: 1rem 0 4rem;
+  padding: 0;
+  border-top: 1px solid var(--panel-line);
+}
+
+.novel-item {
+  border-bottom: 1px solid var(--panel-line);
+  padding: 1.15rem 0.25rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  cursor: pointer;
+  transition: padding-left 0.15s ease;
+}
+
+.novel-item:hover, .novel-item:focus-visible {
+  padding-left: 0.75rem;
+}
+
+.novel-item:hover .novel-title, .novel-item:focus-visible .novel-title {
+  border-bottom-color: var(--brass);
+}
+
+.novel-heading { display: flex; flex-direction: column; gap: 0.2rem; }
+
+.novel-title {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  border-bottom: 1px solid transparent;
+}
+
+.novel-byline {
+  font-size: 0.85rem;
+  color: var(--parchment-dim);
+}
+
+.novel-count {
+  font-size: 0.85rem;
+  color: var(--parchment-dim);
+  white-space: nowrap;
+}
+
+/* ---------- View 2: graph ---------- */
+
+.graph-stage {
+  position: relative;
+  margin-top: 1.5rem;
+  height: 62vh;
+  min-height: 420px;
+  background: radial-gradient(circle at 30% 20%, #191d2b 0%, var(--ink) 70%);
+  border: 1px solid var(--panel-line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+#graphSvg { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
 #graphSvg:active { cursor: grabbing; }
 
-/* Bottom-left, so it never sits under the slide-in side panel on the right */
+.node-label {
+  font-family: var(--font-body);
+  font-size: 12px;
+  fill: var(--parchment);
+  pointer-events: none;
+}
+
+.empty-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--parchment-dim);
+  font-family: var(--font-display);
+  font-style: italic;
+  text-align: center;
+  padding: 2rem;
+}
+
+/* Zoom controls: bottom-left, so they never sit under the side panel */
 .zoom-controls {
   position: absolute;
   left: 12px;
@@ -30,4 +215,128 @@
 .zoom-controls button:hover {
   border-color: var(--brass);
   color: var(--brass);
+}
+
+.side-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: 260px;
+  background: var(--parchment);
+  color: var(--ink);
+  transform: translateX(100%);
+  transition: transform 0.25s ease;
+  border-left: 1px solid var(--brass-dim);
+  z-index: 3;
+}
+
+.side-panel.open { transform: translateX(0); }
+
+.side-panel-inner { position: relative; padding: 1.5rem; }
+
+.side-panel-close {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.75rem;
+  width: 28px;
+  height: 28px;
+  background: none;
+  border: none;
+  color: var(--brass-dim);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.side-panel-close:hover { color: var(--ink); }
+
+.side-panel-eyebrow {
+  font-size: 0.75rem;
+  color: var(--brass-dim);
+  margin: 0 0 0.25rem;
+}
+
+.selected-name {
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+  margin: 0 0 0.15rem;
+}
+
+.selected-role {
+  font-size: 0.85rem;
+  color: #4a4536;
+  margin: 0 0 1rem;
+}
+
+.selected-edges { list-style: none; margin: 0; padding: 0; }
+
+.selected-edges li {
+  padding: 0.5rem 0;
+  border-top: 1px solid #cfc6ab;
+  font-size: 0.9rem;
+}
+
+.selected-edges .edge-type {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 0.4rem;
+}
+
+.legend {
+  display: flex;
+  gap: 1.5rem;
+  padding: 0.9rem 0.25rem;
+  font-size: 0.8rem;
+  color: var(--parchment-dim);
+  flex-wrap: wrap;
+}
+
+.legend-item { display: flex; align-items: center; gap: 0.4rem; }
+
+.swatch { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.swatch.bond { background: var(--bond); }
+.swatch.rupture { background: var(--rupture); }
+
+/* ---------- Timeline / chapter slider ---------- */
+
+.timeline { padding: 0.5rem 0.25rem 3rem; }
+
+.timeline-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  color: var(--parchment-dim);
+  margin-bottom: 0.4rem;
+}
+
+.chapter-now {
+  font-family: var(--font-display);
+  color: var(--brass);
+  font-size: 0.95rem;
+}
+
+.chapter-slider {
+  width: 100%;
+  accent-color: var(--brass);
+  cursor: pointer;
+}
+
+/* ---------- Responsive ---------- */
+
+@media (max-width: 640px) {
+  .topbar { padding: 1.1rem 1.2rem; flex-wrap: wrap; }
+  main { padding: 0 1.2rem; }
+  .novel-item { flex-direction: column; align-items: flex-start; gap: 0.2rem; }
+  .side-panel {
+    width: 100%;
+    height: 40%;
+    top: auto;
+    bottom: 0;
+    transform: translateY(100%);
+    border-left: none;
+    border-top: 1px solid var(--brass-dim);
+  }
+  .side-panel.open { transform: translateY(0); }
 }

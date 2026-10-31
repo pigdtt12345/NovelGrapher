@@ -68,6 +68,7 @@ const el = {
     zoomIn: document.getElementById('zoomIn'),
     zoomOut: document.getElementById('zoomOut'),
     zoomFit: document.getElementById('zoomFit'),
+    closePanel: document.getElementById('closePanel'),
 };
 
 function showListView() {
@@ -457,9 +458,20 @@ function resetGraph() {
     }
 }
 
-el.zoomIn.addEventListener('click', () => zoomBy(1.4));
-el.zoomOut.addEventListener('click', () => zoomBy(1 / 1.4));
-el.zoomFit.addEventListener('click', resetView);
+el.zoomIn?.addEventListener('click', () => zoomBy(1.4));
+el.zoomOut?.addEventListener('click', () => zoomBy(1 / 1.4));
+el.zoomFit?.addEventListener('click', resetView);
+
+// Three ways to dismiss the side panel: the × button, clicking empty
+// canvas, or pressing Escape.
+el.closePanel?.addEventListener('click', clearSidePanel);
+el.svg.on('click', (event) => {
+    // node clicks have a <circle> target; only the bare <svg> counts as background
+    if (event.target === el.svg.node()) clearSidePanel();
+});
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') clearSidePanel();
+});
 
 // ---------------------------------------------------------------
 // Dragging, selection, side panel
@@ -520,6 +532,10 @@ function selectNode(node, links) {
 function clearSidePanel() {
     state.selectedNodeId = null;
     el.sidePanel.classList.remove('open');
+    // un-highlight any previously selected node
+    if (state.viewport) {
+        state.viewport.selectAll('.nodes circle').attr('fill', '#B8925A');
+    }
     el.selectedName.textContent = 'Tap a character';
     el.selectedRole.textContent = '';
     el.selectedEdges.innerHTML = '';
