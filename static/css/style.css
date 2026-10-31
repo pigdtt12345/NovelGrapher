@@ -1,0 +1,33 @@
+/* ---------- Zoom / pan (paste at the END of style.css) ---------- */
+
+#graphSvg { touch-action: none; cursor: grab; }
+#graphSvg:active { cursor: grabbing; }
+
+/* Bottom-left, so it never sits under the slide-in side panel on the right */
+.zoom-controls {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 2;
+}
+
+.zoom-controls button {
+  width: 34px;
+  height: 34px;
+  background: var(--panel);
+  color: var(--parchment);
+  border: 1px solid var(--panel-line);
+  border-radius: 3px;
+  font-family: var(--font-body);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.zoom-controls button:hover {
+  border-color: var(--brass);
+  color: var(--brass);
+}
