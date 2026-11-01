@@ -37,6 +37,18 @@
   <!-- ===================== VIEW 2: RELATIONSHIP GRAPH ===================== -->
   <section id="view-graph" class="view hidden">
 
+    <!-- NEW: character search with autocomplete -->
+    <div class="graph-toolbar">
+      <div class="search-box">
+        <input id="characterSearch" type="text" class="search-input"
+               placeholder="Search a character or role…" autocomplete="off"
+               role="combobox" aria-expanded="false" aria-controls="searchSuggestions"
+               aria-autocomplete="list" aria-label="Search characters">
+        <button id="clearSearch" type="button" class="search-clear hidden" aria-label="Clear search">&times;</button>
+        <ul id="searchSuggestions" class="search-suggestions hidden" role="listbox"></ul>
+      </div>
+    </div>
+
     <div class="graph-stage">
       <svg id="graphSvg"></svg>
 
@@ -74,6 +86,19 @@
         <span id="chapterMaxLabel"></span>
       </div>
       <input id="chapterSlider" type="range" min="1" max="1" value="1" step="1" class="chapter-slider">
+    </div>
+
+    <!-- NEW: characters table (follows the chapter slider and the search box) -->
+    <div class="character-table-wrap">
+      <h2 class="table-title">Characters <span id="tableSummary" class="table-summary"></span></h2>
+      <div class="table-scroll">
+        <table class="character-table">
+          <thead>
+            <tr><th>Character</th><th>Role</th><th>Events up to this chapter</th></tr>
+          </thead>
+          <tbody id="characterTableBody"></tbody>
+        </table>
+      </div>
     </div>
 
   </section>

@@ -33,6 +33,11 @@ const state = {
     viewport: null,     // <g> that holds links/nodes/labels and gets zoomed
     zoom: null,         // d3.zoom behavior
     userZoomed: false,  // true once the user pans/zooms manually; stops auto-fit
+    payload: null,      // latest raw API response for the shown chapter (used by the table)
+    graph: {nodes: [], edges: []}, // {nodes, edges} built from payload for the shown chapter
+    links: [],          // link objects currently bound to the force simulation
+    shownChapter: 1,    // chapter the graph/table are currently showing
+    query: '',          // current text in the character search box
 };
 
 // ---------------------------------------------------------------
@@ -69,6 +74,11 @@ const el = {
     zoomOut: document.getElementById('zoomOut'),
     zoomFit: document.getElementById('zoomFit'),
     closePanel: document.getElementById('closePanel'),
+    charSearch: document.getElementById('characterSearch'),
+    charClear: document.getElementById('clearSearch'),
+    suggestions: document.getElementById('searchSuggestions'),
+    tableBody: document.getElementById('characterTableBody'),
+    tableSummary: document.getElementById('tableSummary'),
 };
 
 function showListView() {
@@ -176,6 +186,9 @@ async function openNovel(novel) {
     showGraphView(novel);
     clearSidePanel();
     resetGraph(); // start the new novel from a clean canvas and a fresh fit
+    state.payload = null;
+    state.graph = {nodes: [], edges: []};
+    clearSearch();
 
     try {
         const timeline = await fetchJSON(CONFIG.ENDPOINTS.timeline(novel.id));
@@ -213,7 +226,14 @@ async function loadRelationshipsForChapter(novelId, chapter) {
     // A newer chapter was requested while this one was loading: drop this
     // response so a slow, older reply can't overwrite the latest graph.
     if (requestId !== relationshipsRequestId) return;
-    renderGraph(toGraphData(data, chapter ?? 1));
+    const graph = toGraphData(data, chapter ?? 1);
+    state.payload = data;
+    state.graph = graph;
+    state.shownChapter = chapter ?? 1;
+    renderGraph(graph);
+    renderTable();
+    // keep the dropdown in sync if the user is still typing while scrubbing
+    if (el.charSearch && document.activeElement === el.charSearch) updateSuggestions();
 }
 
 let debounceTimer = null;
@@ -270,6 +290,7 @@ const EDGE_COLOR = {bond: '#3E8878', rupture: '#B5433D'};
 function renderGraph(data) {
     const nodes = data.nodes || [];
     const links = (data.edges || []).map((e) => ({...e}));
+    state.links = links;
 
     el.emptyState.classList.toggle('hidden', nodes.length > 0);
     if (nodes.length === 0) {
@@ -411,6 +432,8 @@ function renderGraph(data) {
 
         if (++ticks === 40 && !state.userZoomed) fitToView();
     });
+
+    applySearchHighlight();
 
     // Keep the side panel in sync if the selected character is still present.
     if (state.selectedNodeId) {
@@ -557,6 +580,330 @@ function clearSidePanel() {
     el.selectedName.textContent = 'Tap a character';
     el.selectedRole.textContent = '';
     el.selectedEdges.innerHTML = '';
+}
+
+// ---------------------------------------------------------------
+// Character search (with autocomplete) and the characters table.
+// Both read the same state: chapter (state.shownChapter) + query.
+// ---------------------------------------------------------------
+
+// lowercase + strip accents so "garcia" finds "García"
+const norm = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
+function isSubsequence(needle, hay) {
+    let i = 0;
+    for (const ch of hay) {
+        if (ch === needle[i]) i++;
+        if (i === needle.length) return true;
+    }
+    return false;
+}
+
+function queryTokens() {
+    return norm(state.query).split(/\s+/).filter(Boolean);
+}
+
+// 0 = no match. Every token must match something, so "mr dar" finds Mr. Darcy.
+// Ranking: word-start in name > anywhere in name > in role > loose letters-in-order.
+function scoreNode(node, tokens) {
+    const nameWords = norm(node.name).split(/\s+/);
+    const name = nameWords.join(' ');
+    const role = norm(node.role);
+    let score = 0;
+    for (const t of tokens) {
+        if (nameWords.some((w) => w.startsWith(t))) score += 3;
+        else if (name.includes(t)) score += 2;
+        else if (role.includes(t)) score += 1;
+        else if (t.length >= 4 && isSubsequence(t, name)) score += 0.5;
+        else return 0;
+    }
+    return score;
+}
+
+// Set of character ids matching the query, or null when the query is empty.
+function matchedIds() {
+    const tokens = queryTokens();
+    if (!tokens.length) return null;
+    return new Set(state.graph.nodes.filter((n) => scoreNode(n, tokens) > 0).map((n) => n.id));
+}
+
+// Dim everything except the matches, their direct neighbours and the edges touching a match.
+function applySearchHighlight() {
+    if (!state.viewport) return;
+    const matches = matchedIds();
+    const keep = new Set(matches || []);
+    if (matches) {
+        state.graph.edges.forEach((e) => {
+            if (matches.has(e.source)) keep.add(e.target);
+            if (matches.has(e.target)) keep.add(e.source);
+        });
+    }
+    const dimmed = (id) => !!matches && !keep.has(id);
+    const endId = (x) => x.id ?? x;
+
+    state.viewport.selectAll('.nodes circle')
+        .classed('is-match', (d) => !!matches && matches.has(d.id))
+        .classed('is-dim', (d) => dimmed(d.id));
+    state.viewport.selectAll('.labels text')
+        .classed('is-dim', (d) => dimmed(d.id));
+    state.viewport.selectAll('.links line')
+        .classed('is-dim', (d) => !!matches && !(matches.has(endId(d.source)) || matches.has(endId(d.target))));
+}
+
+// --- autocomplete dropdown ---------------------------------------
+let suggestionNodes = [];
+let activeSuggestion = -1;
+
+function appendHighlighted(parent, text, tokens) {
+    const pattern = tokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+    if (!pattern) {
+        parent.textContent = text;
+        return;
+    }
+    text.split(new RegExp(`(${pattern})`, 'gi')).forEach((part, i) => {
+        if (!part) return;
+        if (i % 2 === 1) {
+            const mark = document.createElement('mark');
+            mark.textContent = part;
+            parent.appendChild(mark);
+        } else {
+            parent.appendChild(document.createTextNode(part));
+        }
+    });
+}
+
+function hideSuggestions() {
+    if (!el.suggestions) return;
+    el.suggestions.classList.add('hidden');
+    el.charSearch.setAttribute('aria-expanded', 'false');
+    el.charSearch.removeAttribute('aria-activedescendant');
+    activeSuggestion = -1;
+}
+
+function setActiveSuggestion(i) {
+    activeSuggestion = i;
+    [...el.suggestions.querySelectorAll('.suggestion')].forEach((li, idx) => {
+        li.classList.toggle('active', idx === i);
+        if (idx === i) {
+            el.charSearch.setAttribute('aria-activedescendant', li.id);
+            li.scrollIntoView({block: 'nearest'});
+        }
+    });
+}
+
+function updateSuggestions() {
+    if (!el.suggestions) return;
+    const tokens = queryTokens();
+    el.suggestions.innerHTML = '';
+    activeSuggestion = -1;
+    if (!tokens.length) {
+        suggestionNodes = [];
+        hideSuggestions();
+        return;
+    }
+
+    suggestionNodes = state.graph.nodes
+        .map((n) => ({n, s: scoreNode(n, tokens)}))
+        .filter((x) => x.s > 0)
+        .sort((a, b) => b.s - a.s || a.n.name.localeCompare(b.n.name))
+        .slice(0, 6)
+        .map((x) => x.n);
+
+    if (!suggestionNodes.length) {
+        const li = document.createElement('li');
+        li.className = 'suggestion-empty';
+        li.textContent = 'No matching character at this chapter';
+        el.suggestions.appendChild(li);
+    }
+
+    suggestionNodes.forEach((n, i) => {
+        const li = document.createElement('li');
+        li.className = 'suggestion';
+        li.id = `suggestion-${i}`;
+        li.setAttribute('role', 'option');
+
+        const name = document.createElement('span');
+        name.className = 'suggestion-name';
+        appendHighlighted(name, n.name, tokens);
+
+        const role = document.createElement('span');
+        role.className = 'suggestion-role';
+        role.textContent = n.role || '';
+
+        li.appendChild(name);
+        li.appendChild(role);
+        // mousedown (not click) so the input doesn't blur and close the list first
+        li.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            pickSuggestion(n);
+        });
+        el.suggestions.appendChild(li);
+    });
+
+    el.suggestions.classList.remove('hidden');
+    el.charSearch.setAttribute('aria-expanded', 'true');
+}
+
+function pickSuggestion(node) {
+    state.query = node.name;
+    el.charSearch.value = node.name;
+    el.charClear.classList.remove('hidden');
+    hideSuggestions();
+    applySearchHighlight();
+    renderTable();
+    selectCharacter(node.id);
+}
+
+function selectCharacter(id) {
+    const simNode = state.simulation && state.simulation.nodes().find((n) => n.id === id);
+    if (simNode) selectNode(simNode, state.links);
+}
+
+function clearSearch() {
+    state.query = '';
+    if (el.charSearch) el.charSearch.value = '';
+    if (el.charClear) el.charClear.classList.add('hidden');
+    hideSuggestions();
+    applySearchHighlight();
+    renderTable();
+}
+
+if (el.charSearch) {
+    el.charSearch.addEventListener('input', () => {
+        state.query = el.charSearch.value;
+        el.charClear.classList.toggle('hidden', !state.query);
+        applySearchHighlight();
+        renderTable();
+        updateSuggestions();
+    });
+
+    el.charSearch.addEventListener('focus', () => {
+        if (state.query) updateSuggestions();
+    });
+    el.charSearch.addEventListener('blur', hideSuggestions);
+
+    el.charSearch.addEventListener('keydown', (e) => {
+        const open = !el.suggestions.classList.contains('hidden');
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (!open) updateSuggestions();
+            if (!suggestionNodes.length) return;
+            const step = e.key === 'ArrowDown' ? 1 : -1;
+            setActiveSuggestion((activeSuggestion + step + suggestionNodes.length) % suggestionNodes.length);
+        } else if (e.key === 'Enter') {
+            if (open && suggestionNodes.length) {
+                e.preventDefault();
+                pickSuggestion(suggestionNodes[activeSuggestion >= 0 ? activeSuggestion : 0]);
+            }
+        } else if (e.key === 'Escape') {
+            // first Esc closes the list, second clears the text; don't also close the side panel
+            if (open) {
+                hideSuggestions();
+                e.stopPropagation();
+            } else if (state.query) {
+                clearSearch();
+                e.stopPropagation();
+            }
+        }
+    });
+}
+
+if (el.charClear) {
+    el.charClear.addEventListener('click', () => {
+        clearSearch();
+        el.charSearch.focus();
+    });
+}
+
+// --- characters table --------------------------------------------
+// One row per character present at the shown chapter (filtered by the search),
+// listing every relationship event involving them up to that chapter.
+function renderTable() {
+    if (!el.tableBody) return;
+    el.tableBody.innerHTML = '';
+
+    const payload = state.payload;
+    if (!payload) {
+        el.tableSummary.textContent = '';
+        return;
+    }
+
+    const chapter = state.shownChapter;
+    const names = new Map((payload.characters || []).map((c) => [c.character_id, c.character_name]));
+    const events = (payload.relationship_events || [])
+        .filter((e) => e.chapter <= chapter)
+        .sort((a, b) => a.chapter - b.chapter || a.id - b.id);
+
+    const matches = matchedIds();
+    const all = state.graph.nodes;
+    const rows = matches ? all.filter((n) => matches.has(n.id)) : all;
+    el.tableSummary.textContent = `${rows.length} of ${all.length} shown · events up to Ch. ${chapter}`;
+
+    if (!rows.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 3;
+        td.className = 'table-muted';
+        td.textContent = 'No characters match your search.';
+        tr.appendChild(td);
+        el.tableBody.appendChild(tr);
+        return;
+    }
+
+    rows.forEach((n) => {
+        const tr = document.createElement('tr');
+        tr.tabIndex = 0;
+
+        const nameTd = document.createElement('td');
+        nameTd.className = 'table-name';
+        nameTd.textContent = n.name;
+
+        const roleTd = document.createElement('td');
+        roleTd.textContent = n.role || '';
+
+        const eventsTd = document.createElement('td');
+        const mine = events.filter((e) => e.source === n.id || e.target === n.id);
+        if (!mine.length) {
+            const none = document.createElement('span');
+            none.className = 'table-muted';
+            none.textContent = 'No recorded events yet';
+            eventsTd.appendChild(none);
+        } else {
+            const ul = document.createElement('ul');
+            ul.className = 'table-events';
+            mine.forEach((e) => {
+                const otherId = e.source === n.id ? e.target : e.source;
+                const li = document.createElement('li');
+
+                const chip = document.createElement('span');
+                chip.className = 'chapter-chip';
+                chip.textContent = `Ch. ${e.chapter}`;
+
+                const dot = document.createElement('span');
+                dot.className = 'edge-type';
+                dot.style.background = EDGE_COLOR[e.type] || EDGE_COLOR.bond;
+
+                li.appendChild(chip);
+                li.appendChild(dot);
+                li.appendChild(document.createTextNode(
+                    `${names.get(otherId) || otherId} — ${e.label || e.type}`
+                ));
+                ul.appendChild(li);
+            });
+            eventsTd.appendChild(ul);
+        }
+
+        tr.appendChild(nameTd);
+        tr.appendChild(roleTd);
+        tr.appendChild(eventsTd);
+
+        const open = () => selectCharacter(n.id);
+        tr.addEventListener('click', open);
+        tr.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter') open();
+        });
+        el.tableBody.appendChild(tr);
+    });
 }
 
 // ---------------------------------------------------------------
