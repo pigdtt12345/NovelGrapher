@@ -39,7 +39,7 @@ const state = {
 // Small fetch helper — returns parsed JSON or throws.
 // ---------------------------------------------------------------
 async function fetchJSON(url) {
-    const res = await fetch(url);
+    const res = await fetch(url, {cache: 'no-store'});
     if (!res.ok) throw new Error(`Request to ${url} failed: ${res.status}`);
     return res.json();
 }
@@ -198,7 +198,10 @@ async function openNovel(novel) {
     await loadRelationshipsForChapter(novel.id, state.currentChapter);
 }
 
+let relationshipsRequestId = 0;
+
 async function loadRelationshipsForChapter(novelId, chapter) {
+    const requestId = ++relationshipsRequestId;
     el.chapterNowLabel.textContent = `Ch. ${chapter}`;
     let data;
     try {
@@ -207,6 +210,9 @@ async function loadRelationshipsForChapter(novelId, chapter) {
         console.warn('Falling back to mock relationships:', err.message);
         data = mockRelationships(state.currentNovel, chapter);
     }
+    // A newer chapter was requested while this one was loading: drop this
+    // response so a slow, older reply can't overwrite the latest graph.
+    if (requestId !== relationshipsRequestId) return;
     renderGraph(toGraphData(data, chapter ?? 1));
 }
 
@@ -266,7 +272,17 @@ function renderGraph(data) {
     const links = (data.edges || []).map((e) => ({...e}));
 
     el.emptyState.classList.toggle('hidden', nodes.length > 0);
-    if (nodes.length === 0) return;
+    if (nodes.length === 0) {
+        // nothing to show at this chapter: clear whatever was drawn before
+        if (state.simulation) {
+            state.simulation.nodes([]);
+            state.simulation.force('link').links([]);
+        }
+        if (state.viewport) {
+            state.viewport.selectAll('.links > *, .nodes > *, .labels > *').remove();
+        }
+        return;
+    }
 
     const svg = el.svg;
     const bounds = svg.node().getBoundingClientRect();
@@ -332,7 +348,9 @@ function renderGraph(data) {
     const linkSel = state.viewport.select('.links').selectAll('line')
         .data(links, (d) => `${d.source.id ?? d.source}-${d.target.id ?? d.target}`);
 
-    linkSel.exit().transition().duration(200).attr('stroke-opacity', 0).remove();
+    // Remove stale edges immediately (no fade-out). A pending exit transition
+    // could be interrupted by the next render and leave the old edge behind.
+    linkSel.exit().interrupt().remove();
 
     const linkEnter = linkSel.enter().append('line')
         .attr('stroke-opacity', 0)
