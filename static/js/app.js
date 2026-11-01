@@ -783,6 +783,8 @@ if (el.charSearch) {
     el.charSearch.addEventListener('blur', hideSuggestions);
 
     el.charSearch.addEventListener('keydown', (e) => {
+        // Enter/arrows while an IME (Chinese, Japanese, Korean...) is composing belong to the IME
+        if (e.isComposing) return;
         const open = !el.suggestions.classList.contains('hidden');
         if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
             e.preventDefault();
