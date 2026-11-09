@@ -16,8 +16,8 @@ const CONFIG = {
     ENDPOINTS: {
         novels: () => `${CONFIG.API_BASE}/api/novels/`,
         timeline: (novelId) => `${CONFIG.API_BASE}/api/novels/${novelId}/timeline/`,
-        relationships: (novelId, chapter) =>
-            `${CONFIG.API_BASE}/api/novels/${novelId}/relationships/?chapter=${chapter}`,
+        relationships: (novelId, chapter, lang) =>
+            `${CONFIG.API_BASE}/api/novels/${novelId}/relationships/?lang=${encodeURIComponent(lang)}&chapter=${chapter}`,
     },
     DEBOUNCE_MS: 200,
 };
@@ -38,6 +38,8 @@ const state = {
     links: [],          // link objects currently bound to the force simulation
     shownChapter: 1,    // chapter the graph/table are currently showing
     query: '',          // current text in the character search box
+    lang: 'en',         // language used to display titles, names, roles and labels
+    languages: [],      // language codes found in the novel translations
 };
 
 // ---------------------------------------------------------------
@@ -79,6 +81,7 @@ const el = {
     suggestions: document.getElementById('searchSuggestions'),
     tableBody: document.getElementById('characterTableBody'),
     tableSummary: document.getElementById('tableSummary'),
+    langSelect: document.getElementById('langSelect'),
 };
 
 function showListView() {
@@ -109,23 +112,36 @@ async function loadNovels() {
         el.listStatus.textContent = '';
     } catch (err) {
         console.warn('Falling back to mock novel list:', err.message);
-        state.novels = mockNovels();
+        state.novels = normalizeNovels(mockNovels());
         el.listStatus.textContent = 'Showing sample data — API not reachable yet.';
     }
+    setupLanguages();
     renderNovelList(state.novels);
 }
 
-// Accept a couple of reasonable Django response shapes without
-// forcing a particular field naming convention.
+// API shape: [{id, translations: [{language, novel_title, novel_author, novel_year, ...}],
+// min_chapter, max_chapter}]. We keep all translations on the novel and copy the
+// ones for the current language into title/author/year (see localizeNovel).
 function normalizeNovels(raw) {
     const list = Array.isArray(raw) ? raw : raw.results || [];
-    return list.map((n, i) => ({
-        id: n.novel_id ?? n.pk ?? i,
-        title: n.novel_title ?? n.name ?? 'Untitled',
-        author: n.novel_author ?? n.author_name ?? '',
-        year: n.novel_year ?? n.publication_year ?? '',
-        characterCount: n.character_count ?? n.num_characters ?? null,
-    }));
+    return list.map((n) => {
+        const novel = {
+            id: n.id,
+            translations: n.translations || [],
+            minChapter: n.min_chapter ?? null,
+            maxChapter: n.max_chapter ?? null,
+            characterCount: n.character_count ?? null,
+        };
+        localizeNovel(novel);
+        return novel;
+    });
+}
+
+// Novels matching the search box (looks through every language, accents ignored).
+function filterNovels() {
+    const q = norm(el.searchInput.value.trim());
+    if (!q) return state.novels;
+    return state.novels.filter((n) => n.searchText.includes(q));
 }
 
 function renderNovelList(novels) {
@@ -170,13 +186,7 @@ function renderNovelList(novels) {
     });
 }
 
-el.searchInput.addEventListener('input', () => {
-    const q = el.searchInput.value.trim().toLowerCase();
-    const filtered = state.novels.filter(
-        (n) => n.title.toLowerCase().includes(q) || n.author.toLowerCase().includes(q)
-    );
-    renderNovelList(filtered);
-});
+el.searchInput.addEventListener('input', () => renderNovelList(filterNovels()));
 
 // ---------------------------------------------------------------
 // View 2: graph
@@ -197,8 +207,8 @@ async function openNovel(novel) {
     } catch (err) {
         console.warn('Falling back to mock timeline:', err.message);
         const mock = mockTimeline(novel);
-        state.chapterMin = mock.min_chapter;
-        state.chapterMax = mock.max_chapter;
+        state.chapterMin = novel.minChapter ?? mock.min_chapter;
+        state.chapterMax = novel.maxChapter ?? mock.max_chapter;
     }
 
     state.currentChapter = state.chapterMin;
@@ -218,7 +228,7 @@ async function loadRelationshipsForChapter(novelId, chapter) {
     el.chapterNowLabel.textContent = `Ch. ${chapter}`;
     let data;
     try {
-        data = await fetchJSON(CONFIG.ENDPOINTS.relationships(novelId, chapter));
+        data = await fetchJSON(CONFIG.ENDPOINTS.relationships(novelId, chapter, state.lang));
     } catch (err) {
         console.warn('Falling back to mock relationships:', err.message);
         data = mockRelationships(state.currentNovel, chapter);
@@ -226,7 +236,7 @@ async function loadRelationshipsForChapter(novelId, chapter) {
     // A newer chapter was requested while this one was loading: drop this
     // response so a slow, older reply can't overwrite the latest graph.
     if (requestId !== relationshipsRequestId) return;
-    const graph = toGraphData(data, chapter ?? 1);
+    const graph = toGraphData(data, chapter ?? 1, state.lang);
     state.payload = data;
     state.graph = graph;
     state.shownChapter = chapter ?? 1;
@@ -249,13 +259,13 @@ el.slider.addEventListener('input', () => {
 
 // Converts the API payload ({characters, relationship_events}) into
 // the {nodes, edges} shape that renderGraph expects, for one chapter.
-function toGraphData(payload, chapter) {
-    const nodes = (payload.characters || [])
-        .filter((c) => c.min_chapter <= chapter && chapter <= c.max_chapter)
+function toGraphData(payload, chapter, lang = state.lang) {
+    const nodes = localizeCharacters(payload, lang)
+        .filter((c) => c.minChapter <= chapter && chapter <= c.maxChapter)
         .map((c) => ({
-            id: c.character_id,        // "elizabeth", used by forceLink().id()
-            name: c.character_name,
-            role: c.character_role,
+            id: c.id,                  // numeric character id, used by forceLink().id()
+            name: c.name,
+            role: c.role,
         }));
 
     const visible = new Set(nodes.map((n) => n.id));
@@ -263,11 +273,11 @@ function toGraphData(payload, chapter) {
     // Keep only the latest event per unordered pair up to this chapter,
     // so a later "rupture" replaces an earlier "bond" instead of stacking.
     const latest = new Map();
-    (payload.relationship_events || [])
+    localizeEvents(payload, lang)
         .filter((e) => e.chapter <= chapter && visible.has(e.source) && visible.has(e.target))
         .sort((a, b) => a.chapter - b.chapter || a.id - b.id)
         .forEach((e) => {
-            const key = [e.source, e.target].sort().join('|');
+            const key = [e.source, e.target].sort((a, b) => (String(a) < String(b) ? -1 : 1)).join('|');
             latest.set(key, e);
         });
 
@@ -583,6 +593,127 @@ function clearSidePanel() {
 }
 
 // ---------------------------------------------------------------
+// Languages. Every novel / character / event carries a `translations`
+// array. We show the chosen language, else English, else the first one.
+// ---------------------------------------------------------------
+const LANG_KEY = 'atlas.lang';
+
+function pickTranslation(translations, lang = state.lang) {
+    const list = translations || [];
+    const base = (code) => String(code || '').split('-')[0];
+    return list.find((t) => t.language === lang)
+        || list.find((t) => base(t.language) === base(lang))
+        || list.find((t) => t.language === 'en')
+        || list[0]
+        || null;
+}
+
+function localizeNovel(n) {
+    const t = pickTranslation(n.translations) || {};
+    n.title = t.novel_title || 'Untitled';
+    n.author = t.novel_author || '';
+    n.year = t.novel_year ?? '';
+    n.description = t.novel_description || '';
+    // searchable in every language, so an English title still works while viewing Chinese
+    n.searchText = (n.translations || [])
+        .map((x) => norm(`${x.novel_title || ''} ${x.novel_author || ''}`))
+        .join(' ');
+}
+
+function localizeNovels() {
+    state.novels.forEach(localizeNovel);
+}
+
+function localizeCharacters(payload, lang) {
+    return (payload.characters || []).map((c) => {
+        const t = pickTranslation(c.translations, lang) || {};
+        return {
+            id: c.id,
+            name: t.character_name ?? c.character_name ?? `#${c.id}`,
+            role: t.character_role ?? c.character_role ?? '',
+            minChapter: c.min_chapter,
+            maxChapter: c.max_chapter,
+        };
+    });
+}
+
+// `type` lives inside the translation in the current API, so read it from there
+// (falling back to a top-level `type` if the backend ever moves it).
+function localizeEvents(payload, lang) {
+    return (payload.relationship_events || []).map((e) => {
+        const t = pickTranslation(e.translations, lang) || {};
+        return {
+            id: e.id,
+            chapter: e.chapter,
+            source: e.source,
+            target: e.target,
+            type: e.type ?? t.type ?? 'bond',
+            label: t.label ?? e.label ?? '',
+        };
+    });
+}
+
+function availableLanguages() {
+    const found = new Set();
+    state.novels.forEach((n) => (n.translations || []).forEach((t) => found.add(t.language)));
+    return [...found].sort((a, b) => (a === 'en' ? -1 : b === 'en' ? 1 : a.localeCompare(b)));
+}
+
+// "es" -> "Español", "zh" -> "中文", each shown in its own language
+function languageLabel(code) {
+    try {
+        const name = new Intl.DisplayNames([code], {type: 'language'}).of(code) || code;
+        return name.charAt(0).toLocaleUpperCase(code) + name.slice(1);
+    } catch (_) {
+        return code;
+    }
+}
+
+function populateLangSelect() {
+    if (!el.langSelect) return;
+    el.langSelect.innerHTML = '';
+    state.languages.forEach((code) => {
+        const opt = document.createElement('option');
+        opt.value = code;
+        opt.textContent = languageLabel(code);
+        el.langSelect.appendChild(opt);
+    });
+    el.langSelect.value = state.lang;
+    // nothing to choose between when there is only one language
+    el.langSelect.classList.toggle('hidden', state.languages.length < 2);
+}
+
+// Called after the novel list loads: saved choice → browser language → English.
+function setupLanguages() {
+    state.languages = availableLanguages();
+    let saved = null;
+    try { saved = localStorage.getItem(LANG_KEY); } catch (_) { /* storage blocked */ }
+    const browser = navigator.language || 'en';
+    state.lang = [saved, browser, browser.split('-')[0], 'en']
+        .find((code) => code && state.languages.includes(code)) || state.languages[0] || 'en';
+    document.documentElement.lang = state.lang;
+    populateLangSelect();
+    localizeNovels();
+}
+
+function setLang(lang) {
+    state.lang = lang;
+    try { localStorage.setItem(LANG_KEY, lang); } catch (_) { /* storage blocked */ }
+    document.documentElement.lang = lang;
+    localizeNovels();
+    renderNovelList(filterNovels());
+    if (state.currentNovel) {
+        el.novelSubtitle.textContent = state.currentNovel.title;
+        // refetch so the backend's ?lang= is honoured; keeps chapter and selected character
+        loadRelationshipsForChapter(state.currentNovel.id, state.currentChapter);
+    }
+}
+
+if (el.langSelect) {
+    el.langSelect.addEventListener('change', () => setLang(el.langSelect.value));
+}
+
+// ---------------------------------------------------------------
 // Character search (with autocomplete) and the characters table.
 // Both read the same state: chapter (state.shownChapter) + query.
 // ---------------------------------------------------------------
@@ -831,8 +962,8 @@ function renderTable() {
     }
 
     const chapter = state.shownChapter;
-    const names = new Map((payload.characters || []).map((c) => [c.character_id, c.character_name]));
-    const events = (payload.relationship_events || [])
+    const names = new Map(localizeCharacters(payload, state.lang).map((c) => [c.id, c.name]));
+    const events = localizeEvents(payload, state.lang)
         .filter((e) => e.chapter <= chapter)
         .sort((a, b) => a.chapter - b.chapter || a.id - b.id);
 
@@ -915,15 +1046,27 @@ function renderTable() {
 // relationship_events}) so toGraphData works for both.
 // ---------------------------------------------------------------
 function mockNovels() {
+    const tr = (language, title, author, year) => ({
+        language, novel_title: title, novel_author: author, novel_year: year, novel_description: '',
+    });
     return [
-        {id: 'pride', title: 'Pride and Prejudice', author: 'Jane Austen', year: 1813, characterCount: 8},
-        {id: 'anna', title: 'Anna Karenina', author: 'Leo Tolstoy', year: 1878, characterCount: 10},
+        {
+            id: 'pride',
+            translations: [
+                tr('en', 'Pride and Prejudice', 'Jane Austen', 1813),
+                tr('es', 'Orgullo y prejuicio', 'Jane Austen', 1813),
+            ],
+            min_chapter: 1, max_chapter: 40,
+        },
+        {
+            id: 'anna',
+            translations: [tr('en', 'Anna Karenina', 'Leo Tolstoy', 1878)],
+            min_chapter: 1, max_chapter: 40,
+        },
         {
             id: 'solitude',
-            title: 'One Hundred Years of Solitude',
-            author: 'Gabriel García Márquez',
-            year: 1967,
-            characterCount: 12
+            translations: [tr('en', 'One Hundred Years of Solitude', 'Gabriel García Márquez', 1967)],
+            min_chapter: 1, max_chapter: 40,
         },
     ];
 }
@@ -934,7 +1077,8 @@ function mockTimeline() {
 
 function mockRelationships() {
     const ch = (id, name, role) => ({
-        character_id: id, character_name: name, character_role: role,
+        id,
+        translations: [{language: 'en', character_name: name, character_role: role}],
         min_chapter: 1, max_chapter: 40,
     });
     return {

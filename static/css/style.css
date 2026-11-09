@@ -341,6 +341,20 @@ main { max-width: 840px; margin: 0 auto; padding: 0 2rem; }
   .side-panel.open { transform: translateY(0); }
 }
 
+/* ---------- Language selector ---------- */
+
+.lang-select {
+  margin-left: auto;
+  background: var(--panel);
+  color: var(--parchment);
+  border: 1px solid var(--panel-line);
+  border-radius: 3px;
+  padding: 0.35rem 0.6rem;
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
 /* ---------- Character search ---------- */
 
 .graph-toolbar { margin-top: 1.5rem; display: flex; align-items: center; gap: 1rem; }
